@@ -1,0 +1,37 @@
+---
+- name: Sync LDAP Client Configuration
+  hosts: cluster
+  become: yes
+  tasks:
+    - name: Install LDAP client packages
+      apt:
+        name: [libnss-ldap, libpam-ldap, nslcd]
+        state: present
+        update_cache: yes
+
+    - name: Copy nslcd.conf (Bridge Configuration)
+      copy:
+        src: /etc/nslcd.conf
+        dest: /etc/nslcd.conf
+        owner: root
+        group: nslcd
+        mode: '0640'
+
+    - name: Copy nsswitch.conf (System Identity Switch)
+      copy:
+        src: /etc/nsswitch.conf
+        dest: /etc/nsswitch.conf
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable Automatic Home Directory Creation
+      lineinfile:
+        path: /etc/pam.d/common-session
+        line: "session required pam_mkhomedir.so skel=/etc/skel/ umask=0022"
+
+    - name: Restart LDAP Connection Service
+      systemd:
+        name: nslcd
+        state: restarted
+        enabled: yes

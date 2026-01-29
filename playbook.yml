@@ -1,0 +1,63 @@
+---
+- name: One-Shot Slurm Fix and Install
+  hosts: all
+  become: true
+  gather_facts: false  # Do not change this; it prevents the Python crash
+  vars:
+    slurm_version: "21.08.8-2"
+    source_dir: "/root/slurm-{{ slurm_version }}"
+    slurm_url: "https://download.schedmd.com/slurm/slurm-{{ slurm_version }}.tar.bz2"
+
+  tasks:
+    - name: 1. Clean and Fix Python Environment (Raw SSH)
+      raw: |
+        pkill -9 slurm; pkill -9 munge;
+        rm -rf /usr/local/sbin/slurm* /usr/local/bin/srun /var/spool/slurm* /etc/slurm /etc/munge;
+        apt-get update && apt-get install -y python3-cffi python3-pip build-essential munge libmunge-dev libmunge2 libssl-dev wget numactl libpam0g-dev
+      changed_when: false
+
+    - name: 2. Setup Slurm User and Extract Source
+      shell: |
+        id -u slurm &>/dev/null || useradd -r -s /bin/false slurm
+        mkdir -p /etc/slurm /var/spool/slurmctld /var/spool/slurmd /var/log/slurm
+        wget -qO- {{ slurm_url }} | tar -xjC /root/
+      changed_when: false
+
+    - name: 3. Build Slurm with Explicit Munge Linking
+      shell: |
+        cd {{ source_dir }}
+        ./configure --prefix=/usr/local --sysconfdir=/etc/slurm --with-munge=/usr
+        make -j$(nproc) && make install
+        echo "/usr/local/lib" > /etc/ld.so.conf.d/slurm.conf
+        ldconfig
+      changed_when: false
+
+    - name: 4. Deploy Final Configuration
+      copy:
+        dest: /etc/slurm/slurm.conf
+        content: |
+          ClusterName=hpc_cluster
+          SlurmctldHost=master(192.168.100.10)
+          AuthType=auth/munge
+          SlurmUser=slurm
+          SlurmctldLogFile=/var/log/slurm/slurmctld.log
+          SlurmdLogFile=/var/log/slurm/slurmd.log
+          SlurmdSpoolDir=/var/spool/slurmd
+          StateSaveLocation=/var/spool/slurmctld
+          NodeName=master   NodeAddr=192.168.100.10 CPUs=16 State=UNKNOWN
+          NodeName=compute1 NodeAddr=192.168.100.12 CPUs=16 State=UNKNOWN
+          NodeName=compute2 NodeAddr=192.168.100.13 CPUs=16 State=UNKNOWN
+          PartitionName=hpc Nodes=ALL Default=YES MaxTime=INFINITE State=UP
+        owner: slurm
+        group: slurm
+
+    - name: 5. Start and Enable Services
+      shell: |
+        systemctl enable munge && systemctl restart munge
+        {% if 'slurm_controller' in group_names %}
+        systemctl stop slurmctld || true
+        /usr/local/sbin/slurmctld -c  # Cold start to clear Job 16
+        {% else %}
+        systemctl enable slurmd && systemctl restart slurmd
+        {% endif %}
+      changed_when: false
